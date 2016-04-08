@@ -15,6 +15,16 @@ from odoo.modules import get_module_resource
 from odoo.osv.expression import get_unaccent_wrapper
 from odoo.exceptions import UserError, ValidationError
 
+# Global variables used for the warning fields declared on the res.partner
+# in the following modules : sale, purchase, account, stock 
+WARNING_MESSAGE = [
+                   ('no-message','No Message'),
+                   ('warning','Warning'),
+                   ('block','Blocking Message')
+                   ]
+WARNING_HELP = _('Selecting the "Warning" option will notify user with the message, Selecting "Blocking Message" will throw an exception with the message and block the flow. The Message has to be written in the next field.')
+
+
 ADDRESS_FORMAT_CLASSES = {
     '%(city)s %(state_code)s\n%(zip)s': 'o_city_state',
     '%(zip)s %(city)s': 'o_zip_city'
@@ -112,7 +122,6 @@ class PartnerTitle(models.Model):
     name = fields.Char(string='Title', required=True, translate=True)
     shortcut = fields.Char(string='Abbreviation', translate=True)
 
-
 class Partner(models.Model, FormatAddress):
     _description = 'Partner'
     _name = "res.partner"
@@ -198,13 +207,11 @@ class Partner(models.Model, FormatAddress):
     # image: all image fields are base64 encoded and PIL-supported
     image = fields.Binary("Image", attachment=True,
         help="This field holds the image used as avatar for this contact, limited to 1024x1024px",)
-    image_medium = fields.Binary("Medium-sized image",
-        compute='_compute_images', inverse='_inverse_image_medium', store=True, attachment=True,
+    image_medium = fields.Binary("Medium-sized image", attachment=True,
         help="Medium-sized image of this contact. It is automatically "\
              "resized as a 128x128px image, with aspect ratio preserved. "\
              "Use this field in form views or some kanban views.")
-    image_small = fields.Binary("Small-sized image",
-        compute='_compute_images', inverse='_inverse_image_small', store=True, attachment=True,
+    image_small = fields.Binary("Small-sized image", attachment=True,
         help="Small-sized image of this contact. It is automatically "\
              "resized as a 64x64px image, with aspect ratio preserved. "\
              "Use this field anywhere a small image is required.")
@@ -237,20 +244,6 @@ class Partner(models.Model, FormatAddress):
                 partner.commercial_partner_id = partner
             else:
                 partner.commercial_partner_id = partner.parent_id.commercial_partner_id
-
-    @api.depends('image')
-    def _compute_images(self):
-        for rec in self:
-            rec.image_medium = tools.image_resize_image_medium(rec.image)
-            rec.image_small = tools.image_resize_image_small(rec.image)
-
-    def _inverse_image_medium(self):
-        for rec in self:
-            rec.image = tools.image_resize_image_big(rec.image_medium)
-
-    def _inverse_image_small(self):
-        for rec in self:
-            rec.image = tools.image_resize_image_big(rec.image_small)
 
     @api.model
     def _get_default_image(self, partner_type, is_company, parent_id):
@@ -484,10 +477,13 @@ class Partner(models.Model, FormatAddress):
                     companies = set(user.company_id for user in partner.user_ids)
                     if len(companies) > 1 or company not in companies:
                         raise UserError(_("You can not change the company as the partner/user has multiple user linked with different companies."))
+        tools.image_resize_images(vals)
 
         result = super(Partner, self).write(vals)
         for partner in self:
             partner._fields_sync(vals)
+            if any(u.has_group('base.group_user') for u in partner.user_ids):
+                self.env['res.users'].check_access_rights('write')
         return result
 
     @api.model
@@ -501,6 +497,7 @@ class Partner(models.Model, FormatAddress):
         partner = super(Partner, self).create(vals)
         partner._fields_sync(vals)
         partner._handle_first_contact_creation()
+        tools.image_resize_images(vals)
         return partner
 
     @api.multi
