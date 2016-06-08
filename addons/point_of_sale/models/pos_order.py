@@ -3,6 +3,8 @@
 import logging
 from functools import partial
 
+import psycopg2
+
 from odoo import api, fields, models, tools, _
 from odoo.tools import float_is_zero
 from odoo.exceptions import UserError
@@ -61,30 +63,60 @@ class PosOrder(models.Model):
              ('user_id', '=', closed_session.user_id.id)],
             limit=1, order="start_at DESC")
 
+        _logger.warning('session %s (ID: %s) was closed but received order %s (total: %s) belonging to it',
+                        closed_session.name,
+                        closed_session.id,
+                        order['name'],
+                        order['amount_total'])
+
         if open_session:
+            _logger.warning('using session %s (ID: %s) for order %s instead',
+                            open_session.name,
+                            open_session.id,
+                            order['name'])
             return open_session
         else:
+            _logger.warning('attempting to create new session for order %s', order['name'])
             new_session = PosSession.create({'config_id': closed_session.config_id.id})
             # bypass opening_control (necessary when using cash control)
             new_session.signal_workflow('open')
             return new_session
 
+    def _match_payment_to_invoice(self, order):
+        account_precision = self.env['decimal.precision'].precision_get('Account')
+
+        # ignore orders with an amount_paid of 0 because those are returns through the POS
+        if not float_is_zero(order['amount_return'], account_precision) and not float_is_zero(order['amount_paid'], account_precision):
+            cur_amount_paid = 0
+            payments_to_keep = []
+            for payment in order.get('statement_ids'):
+                if cur_amount_paid + payment[2]['amount'] > order['amount_total']:
+                    payment[2]['amount'] = order['amount_total'] - cur_amount_paid
+                    payments_to_keep.append(payment)
+                    break
+                cur_amount_paid += payment[2]['amount']
+                payments_to_keep.append(payment)
+            order['statement_ids'] = payments_to_keep
+            order['amount_return'] = 0
+
     @api.model
     def _process_order(self, pos_order):
+        prec_acc = self.env['decimal.precision'].precision_get('Account')
         pos_session = self.env['pos.session'].browse(pos_order['pos_session_id'])
         if pos_session.state == 'closing_control' or pos_session.state == 'closed':
             pos_order['pos_session_id'] = self._get_valid_session(pos_order).id
         order = self.create(self._order_fields(pos_order))
         journal_ids = set()
         for payments in pos_order['statement_ids']:
-            order.add_payment(self._payment_fields(payments[2]))
+            if not float_is_zero(payments[2]['amount'], precision_digits=prec_acc):
+                order.add_payment(self._payment_fields(payments[2]))
             journal_ids.add(payments[2]['journal_id'])
 
         if pos_session.sequence_number <= pos_order['sequence_number']:
             pos_session.write({'sequence_number': pos_order['sequence_number'] + 1})
             pos_session.refresh()
 
-        if not float_is_zero(pos_order['amount_return'], self.env['decimal.precision'].precision_get('Account')):
+        if not float_is_zero(pos_order['amount_return'], prec_acc):
             cash_journal_id = pos_session.cash_journal_id.id
             if not cash_journal_id:
                 # Select for change one of the cash journals used in this
@@ -156,7 +188,7 @@ class PosOrder(models.Model):
         invoice_line.invoice_line_tax_ids = invoice_line.invoice_line_tax_ids.ids
         # We convert a new id object back to a dictionary to write to
         # bridge between old and new api
-        inv_line = invoice_line._convert_to_write(invoice_line._cache)
+        inv_line = invoice_line._convert_to_write({name: invoice_line[name] for name in invoice_line._cache})
         inv_line.update(price_unit=line.price_unit, discount=line.discount)
         return InvoiceLine.sudo().create(inv_line)
 
@@ -393,6 +425,18 @@ class PosOrder(models.Model):
         self.write({'state': 'invoiced'})
 
     @api.multi
+    def action_view_invoice(self):
+        return {
+            'name': _('Customer Invoice'),
+            'view_mode': 'form',
+            'view_id': self.env.ref('account.invoice_form').id,
+            'res_model': 'account.invoice',
+            'context': "{'type':'out_invoice'}",
+            'type': 'ir.actions.act_window',
+            'res_id': self.invoice_id.id,
+        }
+
+    @api.multi
     def action_invoice(self):
         Invoice = self.env['account.invoice']
 
@@ -410,8 +454,10 @@ class PosOrder(models.Model):
             invoice._onchange_partner_id()
             invoice.fiscal_position_id = order.fiscal_position_id
 
-            inv = invoice._convert_to_write(invoice._cache)
+            inv = invoice._convert_to_write({name: invoice[name] for name in invoice._cache})
             new_invoice = Invoice.with_context(local_context).sudo().create(inv)
+            message = _("This invoice has been created from the point of sale session: <a href=# data-oe-model=pos.order data-oe-id=%d>%s</a>") % (order.id, order.name)
+            new_invoice.message_post(body=message)            
             order.write({'invoice_id': new_invoice.id, 'state': 'invoiced'})
             Invoice += new_invoice
 
@@ -463,11 +509,17 @@ class PosOrder(models.Model):
 
         for tmp_order in orders_to_save:
             to_invoice = tmp_order['to_invoice']
-            pos_order = self._process_order(tmp_order['data'])
+            order = tmp_order['data']
+            if to_invoice:
+                self._match_payment_to_invoice(order)
+            pos_order = self._process_order(order)
             order_ids.append(pos_order.id)
 
             try:
                 pos_order.signal_workflow('paid')
+            except psycopg2.OperationalError:
+                # do not hide transactional errors, the order(s) won't be saved!
+                raise
             except Exception as e:
                 _logger.error('Could not fully process the POS Order: %s', tools.ustr(e))
 
@@ -501,7 +553,7 @@ class PosOrder(models.Model):
                 destination_id = order.partner_id.property_stock_customer.id
             else:
                 if (not picking_type) or (not picking_type.default_location_dest_id):
-                    customerloc, supplierloc = StockWarehouse._get_partner_locations([])
+                    customerloc, supplierloc = StockWarehouse._get_partner_locations()
                     destination_id = customerloc.id
                 else:
                     destination_id = picking_type.default_location_dest_id.id
@@ -518,6 +570,8 @@ class PosOrder(models.Model):
                     'location_id': location_id if pos_qty else destination_id,
                     'location_dest_id': destination_id if pos_qty else location_id,
                 })
+                message = _("This transfer has been created from the point of sale session: <a href=# data-oe-model=pos.order data-oe-id=%d>%s</a>") % (order.id, order.name)
+                picking_id.message_post(body=message)                
                 order.write({'picking_id': picking_id.id})
 
             for line in order.lines.filtered(lambda l: l.product_id.type in ['product', 'consu']):
@@ -606,6 +660,7 @@ class PosOrder(models.Model):
                 'name': order.name + _(' REFUND'),
                 'session_id': current_session.id,
                 'date_order': fields.Datetime.now(),
+                'pos_reference': order.pos_reference,
             })
             PosOrder += clone
 

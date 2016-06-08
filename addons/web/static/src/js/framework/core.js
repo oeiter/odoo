@@ -91,6 +91,8 @@ _.extend(qweb.default_dict, {
     'moment': function(date) { return new moment(date); },
 });
 
+qweb.default_dict.csrf_token = odoo.csrf_token;
+
 qweb.preprocess_node = function() {
     // Note that 'this' is the Qweb Node
     switch (this.node.nodeType) {
@@ -177,21 +179,18 @@ return {
     _lt: _lt,
 
     // registries
-    view_registry: new Registry(),
-    crash_registry: new Registry(),
     action_registry : new Registry(),
-    form_widget_registry: new Registry(),
-    form_tag_registry: new Registry(),
+    crash_registry: new Registry(),
     form_custom_registry: new Registry(),
+    form_tag_registry: new Registry(),
+    form_widget_registry: new Registry(),
     list_widget_registry: new Registry(),
-    search_widgets_registry: new Registry(),
-    search_filters_registry: new Registry(),
-
-    // necessary to make the kanban view compatible between 
-    // community and enterprise edition
     one2many_view_registry: new Registry(),
+    search_filters_registry: new Registry(),
+    search_widgets_registry: new Registry(),
+    view_registry: new Registry(),
 
+    csrf_token: odoo.csrf_token,
 };
-
 
 });

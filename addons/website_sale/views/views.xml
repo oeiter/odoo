@@ -23,6 +23,8 @@
                     <field name="public_categ_ids" widget="many2many_tags" string="Website Categories"/>
                     <field name="alternative_product_ids" widget="many2many_tags"/>
                     <field name="accessory_product_ids" widget="many2many_tags"/>
+                    <field name="availability" widget="selection"/>
+                    <field name="availability_warning" attrs="{'invisible': [('availability', '!=', 'warning')]}"/>
                     <field name="website_style_ids" widget="many2many_tags" groups="base.group_no_one"/>
                 </group>
             </group>
@@ -75,7 +77,7 @@
         <field name="arch" type="xml">
             <form string="Website Public Categories">
                 <sheet>
-                    <field name="image_medium" widget='image' class="oe_avatar oe_right"/>
+                    <field name="image_medium" widget='image' class="oe_avatar"/>
                     <div class="oe_left">
                         <group>
                             <field name="name"/>

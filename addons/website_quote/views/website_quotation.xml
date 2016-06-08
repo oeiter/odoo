@@ -162,7 +162,8 @@
               <div t-if="breadcrumb" class="row">
                   <div class="col-sm-4">
                       <ol class="breadcrumb mt8">
-                          <li><a href="/my/home">My Account</a></li>
+                          <li><a href="/my/home"><i class="fa fa-home"/></a></li>
+                          <li><a t-attf-href="/my/quotes?#{keep_query()}">My Quotations</a></li>
                           <li>
                               Quotation <t t-esc="quotation.name"/>
                           </li>
@@ -174,8 +175,11 @@
                   <div class="col-md-3 hidden-print">
                       <div class="bs-sidebar">
                           <div class="text-center" t-if="quotation.state in ('draft', 'sent', 'waiting_date')" style="padding: 10px">
-                              <a t-if="order_valid" class="btn btn-primary btn-block" data-toggle="modal" data-target="#modalaccept">
+                              <a t-if="order_valid and not quotation.require_payment" class="btn btn-primary btn-block" data-toggle="modal" data-target="#modalaccept">
                                   <i class="fa fa-check"></i> Accept Order
+                              </a>
+                              <a t-if="order_valid and quotation.require_payment" class="btn btn-primary btn-block" data-toggle="modal" data-target="#modalaccept">
+                                  <i class="fa fa-check"></i> Accept &amp; Pay
                               </a>
                               <a t-if="not order_valid" href="#discussion" class="btn btn-info btn-block o_normalwhitespace">
                                   <strong>This offer expired!</strong><br/>
@@ -187,7 +191,7 @@
                                   </a>
                               </div>
                           </div>
-                          <div class="text-center" t-if="need_payment" style="padding: 10px">
+                          <div class="text-center" t-if="need_payment or (quotation.state in ('sale') and quotation.require_payment and tx_state != 'done')" style="padding: 10px">
                               <a class="btn btn-primary btn-block" data-toggle="modal" data-target="#modalaccept">
                                   <i class="fa fa-check"></i> Pay Now
                               </a>
@@ -381,11 +385,19 @@
                       <t t-call="website_quote.so_quotation_content"/>
 
                       <div class="text-center hidden-print mt16 mb16" id="quotation_toolbar" t-if="quotation.state in ('draft', 'sent', 'waiting_date')">
-                          <a class="btn btn-success" data-toggle="modal" data-target="#modalaccept" t-if="order_valid">
+                          <a class="btn btn-success" data-toggle="modal" data-target="#modalaccept" t-if="order_valid and not quotation.require_payment">
                               <i class="fa fa-check"></i> Accept
+                          </a>
+                          <a class="btn btn-success" data-toggle="modal" data-target="#modalaccept" t-if="order_valid and quotation.require_payment">
+                              <i class="fa fa-check"></i> Accept &amp; Pay
                           </a>
                           <a class="btn btn-danger" data-toggle="modal" data-target="#modaldecline">
                               <i class="fa fa-times"></i> Reject
+                          </a>
+                      </div>
+                      <div class="text-center" t-if="need_payment or (quotation.state in ('sale') and quotation.require_payment and tx_state != 'done')" style="padding: 10px">
+                          <a class="btn btn-primary" data-toggle="modal" data-target="#modalaccept">
+                              <i class="fa fa-check"></i> Pay Now
                           </a>
                       </div>
 
@@ -671,12 +683,12 @@
       </xpath>
   </template>
 
-  <template id="quotations" inherit_id="website_portal_sale.quotations">
+  <template id="quotations" inherit_id="website_portal_sale.portal_my_quotations">
       <xpath expr="//t[@t-foreach='quotations']" position="replace">
           <t t-foreach="quotations" t-as="quotation">
-              <tr t-att-class="'hidden to_hide' if quotation_index &gt; 4 else ''">
+              <tr>
                   <td>
-                      <a t-att-href="'/quote/'+str(quotation.id)"><t t-esc="quotation.name"/></a>
+                      <a t-attf-href="/quote/#{quotation.id}?#{keep_query()}"><t t-esc="quotation.name"/></a>
                   </td>
                   <td><span t-field="quotation.validity_date"/></td>
                       <td>

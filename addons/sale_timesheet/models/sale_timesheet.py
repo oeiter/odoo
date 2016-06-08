@@ -28,12 +28,13 @@ class HrEmployee(models.Model):
 class ProductTemplate(models.Model):
     _inherit = 'product.template'
     track_service = fields.Selection(selection_add=[('timesheet', 'Timesheets on project'), ('task', 'Create a task and track hours')])
-    project_id = fields.Many2one('project.project', string='Project', help='Create a task under this project on sale order validation.',
-                             ondelete='set null')
+    project_id = fields.Many2one('project.project', string='Project',
+                                 help='Create a task under this project on sale order validation. This setting must be set for each company.',
+                                 company_dependent=True)
 
     @api.onchange('type', 'invoice_policy')
     def onchange_type_timesheet(self):
-        if self.type == 'service' and self.invoice_policy != 'cost':
+        if self.type == 'service':
             self.track_service = 'timesheet'
         else:
             self.track_service = 'manual'
@@ -94,8 +95,10 @@ class AccountAnalyticLine(models.Model):
     @api.multi
     def write(self, values):
         self._update_values(values)
-        values = self._get_timesheet_cost(vals=values)
-        return super(AccountAnalyticLine, self).write(values)
+        for line in self:
+            values = line._get_timesheet_cost(vals=values)
+            super(AccountAnalyticLine, line).write(values)
+        return True
 
     @api.model
     def create(self, values):
@@ -119,8 +122,15 @@ class SaleOrder(models.Model):
     @api.depends('project_id.line_ids')
     def _compute_timesheet_ids(self):
         for order in self:
-            order.timesheet_ids = self.env['account.analytic.line'].search([('project_id', '!=', False), ('account_id', '=', order.project_id.id)]) if order.project_id else []
-            order.timesheet_count = round(sum([line.unit_amount for line in order.timesheet_ids]), 2)
+            if order.project_id:
+                order.timesheet_ids = self.env['account.analytic.line'].search(
+                    [('so_line', 'in', order.order_line.ids),
+                     '|',
+                        ('amount', '<=', 0.0),
+                        ('project_id', '!=', False)])
+            else:
+                order.timesheet_ids = []
+            order.timesheet_count = len(order.timesheet_ids)
 
     @api.multi
     @api.constrains('order_line')
@@ -240,5 +250,8 @@ class SaleOrderLine(models.Model):
         return super(SaleOrderLine, self)._compute_analytic(domain=domain)
 
     @api.model
-    def _get_analytic_track_service(self):
-        return super(SaleOrderLine, self)._get_analytic_track_service() + ['timesheet', 'task']
+    def create(self, values):
+        line = super(SaleOrderLine, self).create(values)
+        if line.state == 'sale' and not line.order_id.project_id and line.product_id.track_service in ['timesheet', 'task']:
+            line.order_id._create_analytic_account()
+        return line

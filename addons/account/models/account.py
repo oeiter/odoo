@@ -249,8 +249,10 @@ class AccountJournal(models.Model):
     profit_account_id = fields.Many2one('account.account', string='Profit Account', domain=[('deprecated', '=', False)], help="Used to register a profit when the ending balance of a cash register differs from what the system computes")
     loss_account_id = fields.Many2one('account.account', string='Loss Account', domain=[('deprecated', '=', False)], help="Used to register a loss when the ending balance of a cash register differs from what the system computes")
 
+    belongs_to_company = fields.Boolean('Belong to the user\'s current company', compute="_belong_to_company", search="_search_company_journals",)
+
     # Bank journals fields
-    bank_account_id = fields.Many2one('res.partner.bank', string="Bank Account", ondelete='restrict')
+    bank_account_id = fields.Many2one('res.partner.bank', string="Bank Account", ondelete='restrict', copy=False)
     display_on_footer = fields.Boolean("Show in Invoices Footer", help="Display this bank account on the footer of printed documents like invoices and sales orders.")
     bank_statements_source = fields.Selection([('manual', 'Record Manually')], string='Bank Feeds')
     bank_acc_number = fields.Char(related='bank_account_id.acc_number')
@@ -292,7 +294,11 @@ class AccountJournal(models.Model):
 
     @api.multi
     def unlink(self):
-        bank_accounts = self.mapped('bank_account_id')
+        bank_accounts = self.env['res.partner.bank'].browse()
+        for bank_account in self.mapped('bank_account_id'):
+            accounts = self.search([('bank_account_id', '=', bank_account.id)])
+            if accounts <= self:
+                bank_accounts += bank_account
         ret = super(AccountJournal, self).unlink()
         bank_accounts.unlink()
         return ret
@@ -405,11 +411,12 @@ class AccountJournal(models.Model):
 
             # If no code provided, loop to find next available journal code
             if not vals.get('code'):
+                journal_code_base = (vals['type'] == 'cash' and 'CSH' or 'BNK')
+                journals = self.env['account.journal'].search([('code', 'like', journal_code_base + '%'), ('company_id', '=', company_id)])
                 for num in xrange(1, 100):
                     # journal_code has a maximal size of 5, hence we can enforce the boundary num < 100
-                    journal_code = (vals['type'] == 'cash' and 'CSH' or 'BNK') + str(num)
-                    journal = self.env['account.journal'].search([('code', '=', journal_code), ('company_id', '=', company_id)], limit=1)
-                    if not journal:
+                    journal_code = journal_code_base + str(num)
+                    if journal_code not in journals.mapped('code'):
                         vals['code'] = journal_code
                         break
                 else:
@@ -460,6 +467,22 @@ class AccountJournal(models.Model):
         return res
 
     @api.multi
+    @api.depends('company_id')
+    def _belong_to_company(self):
+        for journal in self:
+            journal.belong_to_company = (journal.company_id.id == self.env.user.company_id.id)
+
+    @api.multi
+    def _search_company_journals(self, operator, value):
+        if value:
+            recs = self.search([('company_id', operator, self.env.user.company_id.id)])
+        elif operator == '=':
+            recs = self.search([('company_id', '!=', self.env.user.company_id.id)])
+        else:
+            recs = self.search([('company_id', operator, self.env.user.company_id.id)])
+        return [('id', 'in', [x.id for x in recs])]
+
+    @api.multi
     @api.depends('inbound_payment_method_ids', 'outbound_payment_method_ids')
     def _methods_compute(self):
         for journal in self:
@@ -503,6 +526,7 @@ class AccountTax(models.Model):
     name = fields.Char(string='Tax Name', required=True, translate=True)
     type_tax_use = fields.Selection([('sale', 'Sales'), ('purchase', 'Purchases'), ('none', 'None')], string='Tax Scope', required=True, default="sale",
         help="Determines where the tax is selectable. Note : 'None' means a tax can't be used by itself, however it can still be used in a group.")
+    tax_adjustment = fields.Boolean(help='Set this field to true if this tax can be used in the tax adjustment wizard, used to manually fill some data in the tax declaration')
     amount_type = fields.Selection(default='percent', string="Tax Computation", required=True, oldname='type',
         selection=[('group', 'Group of Taxes'), ('fixed', 'Fixed'), ('percent', 'Percentage of Price'), ('division', 'Percentage of Price Tax Included')])
     active = fields.Boolean(default=True, help="Set active to false to hide the tax without removing it.")
@@ -515,7 +539,7 @@ class AccountTax(models.Model):
         help="Account that will be set on invoice tax lines for invoices. Leave empty to use the expense account.", oldname='account_collected_id')
     refund_account_id = fields.Many2one('account.account', domain=[('deprecated', '=', False)], string='Tax Account on Refunds', ondelete='restrict',
         help="Account that will be set on invoice tax lines for refunds. Leave empty to use the expense account.", oldname='account_paid_id')
-    description = fields.Char(string='Label on Invoices')
+    description = fields.Char(string='Label on Invoices', translate=True)
     price_include = fields.Boolean(string='Included in Price', default=False,
         help="Check this if the price you use on the product and invoices includes this tax.")
     include_base_amount = fields.Boolean(string='Affect Base of Subsequent Taxes', default=False,
@@ -638,7 +662,11 @@ class AccountTax(models.Model):
             prec += 5
         total_excluded = total_included = base = round(price_unit * quantity, prec)
 
-        for tax in self:
+        # Sorting key is mandatory in this case. When no key is provided, sorted() will perform a
+        # search. However, the search method is overridden in account.tax in order to add a domain
+        # depending on the context. This domain might filter out some taxes from self, e.g. in the
+        # case of group taxes.
+        for tax in self.sorted(key=lambda r: r.sequence):
             if tax.amount_type == 'group':
                 ret = tax.children_tax_ids.compute_all(price_unit, currency, quantity, product, partner)
                 total_excluded = ret['total_excluded']
@@ -665,7 +693,7 @@ class AccountTax(models.Model):
 
             taxes.append({
                 'id': tax.id,
-                'name': tax.name,
+                'name': tax.with_context(**{'lang': partner.lang} if partner else {}).name,
                 'amount': tax_amount,
                 'sequence': tax.sequence,
                 'account_id': tax.account_id.id,

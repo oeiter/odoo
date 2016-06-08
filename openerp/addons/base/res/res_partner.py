@@ -122,6 +122,8 @@ class PartnerTitle(models.Model):
     name = fields.Char(string='Title', required=True, translate=True)
     shortcut = fields.Char(string='Abbreviation', translate=True)
 
+    _sql_constraints = [('name_uniq', 'unique (name)', "Title name already exists !")]
+
 class Partner(models.Model, FormatAddress):
     _description = 'Partner'
     _name = "res.partner"
@@ -188,7 +190,6 @@ class Partner(models.Model, FormatAddress):
     phone = fields.Char()
     fax = fields.Char()
     mobile = fields.Char()
-    birthdate = fields.Char()
     is_company = fields.Boolean(string='Is a Company', default=False,
         help="Check if the contact is a company, otherwise it is a person")
     # company_type is only an interface field, do not use it in business logic
@@ -450,8 +451,6 @@ class Partner(models.Model, FormatAddress):
             any(self[f] for f in address_fields) and not any(parent[f] for f in address_fields):
             addr_vals = self._update_fields_values(address_fields)
             parent.update_address(addr_vals)
-            if not parent.is_company:
-                parent.write({'is_company': True})
 
     def _clean_website(self, website):
         (scheme, netloc, path, params, query, fragment) = urlparse.urlparse(website)
@@ -481,9 +480,9 @@ class Partner(models.Model, FormatAddress):
 
         result = super(Partner, self).write(vals)
         for partner in self:
-            partner._fields_sync(vals)
-            if any(u.has_group('base.group_user') for u in partner.user_ids):
+            if any(u.has_group('base.group_user') for u in partner.user_ids if u != self.env.user):
                 self.env['res.users'].check_access_rights('write')
+            partner._fields_sync(vals)
         return result
 
     @api.model
@@ -494,10 +493,10 @@ class Partner(models.Model, FormatAddress):
         # cannot be easily performed if default images are in the way
         if not vals.get('image'):
             vals['image'] = self._get_default_image(vals.get('type'), vals.get('is_company'), vals.get('parent_id'))
+        tools.image_resize_images(vals)
         partner = super(Partner, self).create(vals)
         partner._fields_sync(vals)
         partner._handle_first_contact_creation()
-        tools.image_resize_images(vals)
         return partner
 
     @api.multi
@@ -645,7 +644,7 @@ class Partner(models.Model, FormatAddress):
         emails = tools.email_split(email)
         if emails:
             email = emails[0]
-        partners = self.search([('email', '=ilike', email)])
+        partners = self.search([('email', '=ilike', email)], limit=1)
         return partners.id or self.name_create(email)[0]
 
     def _get_gravatar_image(self, email):

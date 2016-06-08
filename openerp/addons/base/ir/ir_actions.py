@@ -12,7 +12,7 @@ import odoo
 from odoo import api, fields, models, tools, workflow, _
 from odoo.exceptions import MissingError, UserError, ValidationError
 from odoo.report.report_sxw import report_sxw, report_rml
-from odoo.tools.safe_eval import safe_eval as eval
+from odoo.tools.safe_eval import safe_eval as eval, test_python_expr
 
 _logger = logging.getLogger(__name__)
 
@@ -289,7 +289,7 @@ class IrActionsActWindow(models.Model):
                             help="Model name of the object to open in the view window")
     src_model = fields.Char(string='Source Model',
                             help="Optional model name of the objects on which this action should be visible")
-    target = fields.Selection([('current', 'Current Window'), ('new', 'New Window'), ('inline', 'Inline Edit'), ('inlineview', 'Inline View')], default="current", string='Target Window')
+    target = fields.Selection([('current', 'Current Window'), ('new', 'New Window'), ('inline', 'Inline Edit'), ('inlineview', 'Inline View'), ('fullscreen', 'Full Screen')], default="current", string='Target Window')
     view_mode = fields.Char(required=True, default='tree,form',
                             help="Comma-separated list of allowed view modes, such as 'form', 'tree', 'calendar', etc. (Default: tree,form)")
     view_type = fields.Selection([('tree', 'Tree'), ('form', 'Form')], default="form", string='View Type', required=True,
@@ -391,10 +391,11 @@ class IrActionsActWindowView(models.Model):
 
     @api.model_cr_context
     def _auto_init(self):
-        super(IrActionsActWindowView, self)._auto_init()
+        res = super(IrActionsActWindowView, self)._auto_init()
         self._cr.execute('SELECT indexname FROM pg_indexes WHERE indexname = \'act_window_view_unique_mode_per_action\'')
         if not self._cr.fetchone():
             self._cr.execute('CREATE UNIQUE INDEX act_window_view_unique_mode_per_action ON ir_act_window_view (act_window_id, view_mode)')
+        return res
 
 
 class IrActionsActWindowclose(models.Model):
@@ -594,6 +595,13 @@ class IrActionsServer(models.Model):
             if ftype == 'many2one':
                 model_name = field.comodel_name
         return (True, model_name, None)
+
+    @api.constrains('code')
+    def _check_python_code(self):
+        for action in self.filtered('code'):
+            msg = test_python_expr(expr=action.code.strip(), mode="exec")
+            if msg:
+                raise ValidationError(msg)
 
     @api.constrains('write_expression', 'model_id')
     def _check_write_expression(self):

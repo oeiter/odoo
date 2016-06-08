@@ -74,11 +74,6 @@
                     <field name="child_ids" invisible="1" />
                     <field name="subtask_project_id" invisible="1" />
                 </field>
-                <field name="partner_id" position="after">
-                    <field name="parent_id" attrs="{'invisible' : [('parent_id', '=', False)]}" />
-                    <field name="child_ids" invisible="1" />
-                    <field name="subtask_project_id" invisible="1" />
-                </field>
                 <xpath expr="//notebook/page[@name='description_page']" position="after">
                     <page string="Timesheets">
                     <field name="timesheet_ids" context="{'default_project_id': project_id}">
@@ -94,6 +89,7 @@
                      <group class="oe_subtotal_footer oe_right" name="project_hours">
                         <field name="effective_hours" widget="float_time" />
                         <field name="children_hours" widget="float_time" attrs="{'invisible' : [('children_hours', '=', 0.0)]}" />
+                        <field name="total_hours_spent" widget="float_time" class="oe_subtotal_footer_separator" attrs="{'invisible' : [('children_hours', '=', 0.0)]}" />
                         <field name="remaining_hours" widget="float_time" class="oe_subtotal_footer_separator" readonly="1"/>
                      </group>
                     </group>

@@ -114,18 +114,16 @@ class crm_lead(FormatAddress, osv.osv):
     }
 
     def _compute_kanban_state(self, cr, uid, ids, fields, args, context=None):
-        """ Very interesting kanban state color. This makes complete sense. Or
-        not. """
         result = {}
         today = date.today()
         for lead in self.browse(cr, uid, ids, context=context):
-            result[lead.id] = 'grey'
+            result[lead.id] = 'red'
             if lead.date_action:
                 lead_date = datetime.strptime(lead.date_action, tools.DEFAULT_SERVER_DATE_FORMAT).date()
-                if lead_date > today:
+                if lead_date >= today:
                     result[lead.id] = 'green'
                 elif lead_date < today:
-                    result[lead.id] = 'red'
+                    result[lead.id] = 'grey'
         return result
 
     def _compute_day(self, cr, uid, ids, fields, args, context=None):
@@ -174,7 +172,7 @@ class crm_lead(FormatAddress, osv.osv):
                         select=True, track_visibility='onchange', help='When sending mails, the default email address is taken from the sales team.'),
         'kanban_state': fields.function(
             _compute_kanban_state, string='Activity State', type="selection",
-            selection=[('grey', 'Normal'), ('red', 'Blocked'), ('green', 'Ready for next stage')]),
+            selection=[('grey', 'No next activity planned'), ('red', 'Next activity late'), ('green', 'Next activity is planned')]),
         'create_date': fields.datetime('Creation Date', readonly=True),
         'email_cc': fields.text('Global CC', help="These email addresses will be added to the CC field of all inbound and outbound emails for this record before being sent. Separate multiple email addresses with a comma"),
         'description': fields.text('Notes'),
@@ -460,11 +458,11 @@ class crm_lead(FormatAddress, osv.osv):
                 value = dict(key).get(lead[field_name], lead[field_name])
             elif field.type == 'many2one':
                 if lead[field_name]:
-                    value = lead[field_name].name_get()[0][1]
+                    value = lead[field_name].sudo().name_get()[0][1]
             elif field.type == 'many2many':
                 if lead[field_name]:
                     for val in lead[field_name]:
-                        field_value = val.name_get()[0][1]
+                        field_value = val.sudo().name_get()[0][1]
                         value += field_value + ","
             else:
                 value = lead[field_name]
@@ -835,6 +833,8 @@ class crm_lead(FormatAddress, osv.osv):
             vals.update(onchange_stage_values)
         if vals.get('probability') >= 100 or not vals.get('active', True):
             vals['date_closed'] = fields.datetime.now()
+        elif vals.get('probability') < 100:
+            vals['date_closed'] = False
         return super(crm_lead, self).write(cr, uid, ids, vals, context=context)
 
     def copy(self, cr, uid, id, default=None, context=None):

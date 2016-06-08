@@ -77,10 +77,11 @@ class ViewCustom(models.Model):
 
     @api.model_cr_context
     def _auto_init(self):
-        super(ViewCustom, self)._auto_init()
+        res = super(ViewCustom, self)._auto_init()
         self._cr.execute("SELECT indexname FROM pg_indexes WHERE indexname = 'ir_ui_view_custom_user_id_ref_id'")
         if not self._cr.fetchone():
             self._cr.execute("CREATE INDEX ir_ui_view_custom_user_id_ref_id ON ir_ui_view_custom (user_id, ref_id)")
+        return res
 
 
 def _hasclass(context, *cls):
@@ -195,7 +196,7 @@ actual arch.
 
         for view in self:
             arch_fs = None
-            if config['dev_mode'] and view.arch_fs and view.xml_id:
+            if 'xml' in config['dev_mode'] and view.arch_fs and view.xml_id:
                 # It is safe to split on / herebelow because arch_fs is explicitely stored with '/'
                 fullpath = get_resource_path(*view.arch_fs.split('/'))
                 arch_fs = get_view_arch_from_file(fullpath, view.xml_id)
@@ -208,6 +209,8 @@ actual arch.
             data = dict(arch_db=view.arch)
             if 'install_mode_data' in self._context:
                 imd = self._context['install_mode_data']
+                if '.' not in imd['xml_id']:
+                    imd['xml_id'] = '%s.%s' % (imd['module'], imd['xml_id'])
                 if self._name == imd['model'] and (not view.xml_id or view.xml_id == imd['xml_id']):
                     # we store the relative path to the resource instead of the absolute path, if found
                     # (it will be missing e.g. when importing data-only modules using base_import_module)
@@ -305,10 +308,11 @@ actual arch.
 
     @api.model_cr_context
     def _auto_init(self):
-        super(View, self)._auto_init()
+        res = super(View, self)._auto_init()
         self._cr.execute('SELECT indexname FROM pg_indexes WHERE indexname = \'ir_ui_view_model_type_inherit_id\'')
         if not self._cr.fetchone():
             self._cr.execute('CREATE INDEX ir_ui_view_model_type_inherit_id ON ir_ui_view (model, inherit_id)')
+        return res
 
     def _compute_defaults(self, values):
         if 'inherit_id' in values:
@@ -502,6 +506,9 @@ actual arch.
             if node is not None:
                 pos = spec.get('position', 'inside')
                 if pos == 'replace':
+                    for loc in spec.xpath(".//*[text()='$0']"):
+                        loc.text = ''
+                        loc.append(copy.deepcopy(node))
                     if node.getparent() is None:
                         source = copy.deepcopy(spec[0])
                     else:
@@ -874,8 +881,8 @@ actual arch.
     # apply ormcache_context decorator unless in dev mode...
     @api.model
     @tools.conditional(
-        not config['dev_mode'],
-        tools.ormcache('self._uid', 'view_id',
+        'xml' not in config['dev_mode'],
+        tools.ormcache('frozenset(self.env.user.groups_id.ids)', 'view_id',
                        'tuple(map(self._context.get, self._read_template_keys()))'),
     )
     def _read_template(self, view_id):
@@ -904,7 +911,7 @@ actual arch.
 
     def clear_cache(self):
         """ Deprecated, use `clear_caches` instead. """
-        if not config['dev_mode']:
+        if 'xml' not in config['dev_mode']:
             self.clear_caches()
 
     def _contains_branded(self, node):
@@ -985,7 +992,7 @@ actual arch.
         return arch
 
     @api.multi
-    @tools.ormcache('self._uid', 'self.id')
+    @tools.ormcache('self.id')
     def get_view_xmlid(self):
         domain = [('model', '=', 'ir.ui.view'), ('res_id', '=', self.id)]
         xmlid = self.env['ir.model.data'].search_read(domain, ['module', 'name'])[0]

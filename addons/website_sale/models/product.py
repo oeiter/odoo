@@ -75,7 +75,6 @@ class ProductTemplate(models.Model):
     _name = 'product.template'
     _mail_post_access = 'read'
 
-    # TODO FIXME tde: when website_mail/mail_thread.py inheritance work -> this field won't be necessary
     website_message_ids = fields.One2many(
         'mail.message', 'res_id',
         domain=lambda self: ['&', ('model', '=', self._name), ('message_type', '=', 'comment')],
@@ -93,6 +92,12 @@ class ProductTemplate(models.Model):
                                       default=lambda self: self._default_website_sequence())
     public_categ_ids = fields.Many2many('product.public.category', string='Website Product Category',
                                         help="Those categories are used to group similar products for e-commerce.")
+    availability = fields.Selection([
+        ('empty', 'Display Nothing'),
+        ('in_stock', 'In Stock'),
+        ('warning', 'Warning'),
+    ], "Availability", default='empty', help="This field is used to display a availability banner with a message on the ecommerce")
+    availability_warning = fields.Text("Availability Warning", translate=True)
 
     def _default_website_sequence(self):
         min_sequence = self.sudo().search([], order='website_sequence', limit=1).website_sequence

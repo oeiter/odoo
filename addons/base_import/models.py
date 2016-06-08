@@ -252,15 +252,21 @@ class ir_import(orm.TransientModel):
         :throws csv.Error: if an error is detected during CSV parsing
         :throws UnicodeDecodeError: if ``options.encoding`` is incorrect
         """
-        csv_iterator = csv.reader(
-            StringIO(record.file),
-            quotechar=str(options['quoting']),
-            delimiter=str(options['separator']))
+        csv_data = record.file
 
         # TODO: guess encoding with chardet? Or https://github.com/aadsm/jschardet
         encoding = options.get('encoding', 'utf-8')
+        if encoding != 'utf-8':
+            # csv module expect utf-8, see http://docs.python.org/2/library/csv.html
+            csv_data = csv_data.decode(encoding).encode('utf-8')
+
+        csv_iterator = csv.reader(
+            StringIO(csv_data),
+            quotechar=str(options['quoting']),
+            delimiter=str(options['separator']))
+
         return (
-            [item.decode(encoding) for item in row]
+            [item.decode('utf-8') for item in row]
             for row in csv_iterator
             if any(x for x in row if x.strip())
         )
@@ -323,7 +329,7 @@ class ir_import(orm.TransientModel):
         # Try to see if all values are a date or datetime
         dt = datetime.datetime
         separator = [' ','/','-']
-        date_format = ['%dr%mr%Y', '%mr%dr%Y', '%Yr%mr%d', '%Yr%dr%m']
+        date_format = ['%mr%dr%Y', '%dr%mr%Y', '%Yr%mr%d', '%Yr%dr%m']
         date_patterns = [options['date_format']] if options.get('date_format') else []
         if not date_patterns:
             date_patterns = [pattern.replace('r', sep) for sep in separator for pattern in date_format]
@@ -552,7 +558,7 @@ class ir_import(orm.TransientModel):
             # Check that currency exists
             currency = self.pool.get('res.currency').search(cr, uid, [('symbol', '=', split_value[currency_index].strip())])
             if len(currency):
-                return split_value[currency_index+1%2] if not negative else '-'+split_value[currency_index+1%2]
+                return split_value[(currency_index+1)%2] if not negative else '-'+split_value[(currency_index+1)%2]
             # Otherwise it is not a float with a currency symbol
             return False
 

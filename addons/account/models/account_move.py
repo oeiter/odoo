@@ -8,6 +8,7 @@ from openerp.exceptions import RedirectWarning, UserError, ValidationError
 from openerp.tools.misc import formatLang
 from openerp.tools import float_is_zero, float_compare
 from openerp.tools.safe_eval import safe_eval
+from lxml import etree
 
 #----------------------------------------------------------
 # Entries
@@ -92,6 +93,14 @@ class AccountMove(models.Model):
     statement_line_id = fields.Many2one('account.bank.statement.line', string='Bank statement line reconciled with this entry', copy=False, readonly=True)
     # Dummy Account field to search on account.move by account_id
     dummy_account_id = fields.Many2one('account.account', related='line_ids.account_id', string='Account', store=False)
+
+    @api.model
+    def fields_view_get(self, view_id=None, view_type='form', toolbar=False, submenu=False):
+        res = super(AccountMove, self).fields_view_get(
+            view_id=view_id, view_type=view_type, toolbar=toolbar, submenu=submenu)
+        if self._context.get('vat_domain'):
+            res['fields']['line_ids']['views']['tree']['fields']['tax_line_id']['domain'] = [('tag_ids', 'in', [self.env.ref(self._context.get('vat_domain')).id])]
+        return res
 
     @api.model
     def create(self, vals):
@@ -251,12 +260,16 @@ class AccountMoveLine(models.Model):
 
                 amount += sign_partial_line * partial_line.amount
                 #getting the date of the matched item to compute the amount_residual in currency
-                date = partial_line.credit_move_id.date if partial_line.debit_move_id == line else partial_line.debit_move_id.date
                 if line.currency_id:
                     if partial_line.currency_id and partial_line.currency_id == line.currency_id:
                         amount_residual_currency += sign_partial_line * partial_line.amount_currency
                     else:
-                        amount_residual_currency += sign_partial_line * line.company_id.currency_id.with_context(date=date).compute(partial_line.amount, line.currency_id)
+                        if line.balance and line.amount_currency:
+                            rate = line.amount_currency / line.balance
+                        else:
+                            date = partial_line.credit_move_id.date if partial_line.debit_move_id == line else partial_line.debit_move_id.date
+                            rate = line.currency_id.with_context(date=date).rate
+                        amount_residual_currency += sign_partial_line * line.currency_id.round(partial_line.amount * rate)
 
             #computing the `reconciled` field. As we book exchange rate difference on each partial matching,
             #we can only check the amount in company currency
@@ -372,6 +385,7 @@ class AccountMoveLine(models.Model):
     tax_ids = fields.Many2many('account.tax', string='Taxes')
     tax_line_id = fields.Many2one('account.tax', string='Originator tax')
     analytic_account_id = fields.Many2one('account.analytic.account', string='Analytic Account')
+    analytic_tag_ids = fields.Many2many('account.analytic.tag', string='Analytic tags')
     company_id = fields.Many2one('res.company', related='account_id.company_id', string='Company', store=True)
     counterpart = fields.Char("Counterpart", compute='_get_counterpart', help="Compute the counter part accounts of this journal item for this journal entry. This can be needed in reports.")
 
@@ -667,7 +681,7 @@ class AccountMoveLine(models.Model):
                 amount_currency_str = formatLang(self.env, abs(actual_debit or actual_credit), currency_obj=line_currency)
                 total_amount_currency_str = formatLang(self.env, total_amount, currency_obj=line_currency)
                 ctx = context.copy()
-                ctx.update({'date': line.date})
+                ctx.update({'date': target_date or line.date})
                 total_amount = line_currency.with_context(ctx).compute(total_amount, target_currency)
                 actual_debit = line_currency.with_context(ctx).compute(actual_debit, target_currency)
                 actual_credit = line_currency.with_context(ctx).compute(actual_credit, target_currency)
@@ -710,7 +724,7 @@ class AccountMoveLine(models.Model):
             :param new_mv_line_dicts: list of dicts containing values suitable fot account_move_line.create()
         """
         if len(self) < 1 or len(self) + len(new_mv_line_dicts) < 2:
-            raise UserError(_('Error!'), _('A reconciliation must involve at least 2 move lines.'))
+            raise UserError(_('A reconciliation must involve at least 2 move lines.'))
 
         # Create writeoff move lines
         if len(new_mv_line_dicts) > 0:
@@ -825,7 +839,14 @@ class AccountMoveLine(models.Model):
 
         #if writeoff_acc_id specified, then create write-off move with value the remaining amount from move in self
         if writeoff_acc_id and writeoff_journal_id and remaining_moves:
-            writeoff_to_reconcile = remaining_moves._create_writeoff({'account_id': writeoff_acc_id.id, 'journal_id': writeoff_journal_id.id})
+            all_aml_share_same_currency = all([x.currency_id == self[0].currency_id for x in self])
+            writeoff_vals = {
+                'account_id': writeoff_acc_id.id,
+                'journal_id': writeoff_journal_id.id
+            }
+            if not all_aml_share_same_currency:
+                writeoff_vals['amount_currency'] = False
+            writeoff_to_reconcile = remaining_moves._create_writeoff(writeoff_vals)
             #add writeoff line to reconcile algo and finish the reconciliation
             remaining_moves = (remaining_moves + writeoff_to_reconcile).auto_reconcile_lines()
 
@@ -985,8 +1006,9 @@ class AccountMoveLine(models.Model):
             # Since create() receives ids instead of recordset, let's just use the old-api bridge
             taxes = self.env['account.tax'].browse(tax_ids)
             currency = self.env['res.currency'].browse(vals.get('currency_id'))
+            partner = self.env['res.partner'].browse(vals.get('partner_id'))
             res = taxes.compute_all(amount,
-                currency, 1, vals.get('product_id'), vals.get('partner_id'))
+                currency, 1, vals.get('product_id'), partner)
             # Adjust line amount if any tax is price_include
             if abs(res['total_excluded']) < abs(amount):
                 if vals['debit'] != 0.0: vals['debit'] = res['total_excluded']
@@ -1117,9 +1139,9 @@ class AccountMoveLine(models.Model):
             method first remove any existing analytic item related to the line before creating any new one.
         """
         for obj_line in self:
+            if obj_line.analytic_line_ids:
+                obj_line.analytic_line_ids.unlink()
             if obj_line.analytic_account_id:
-                if obj_line.analytic_line_ids:
-                    obj_line.analytic_line_ids.unlink()
                 vals_line = obj_line._prepare_analytic_line()[0]
                 self.env['account.analytic.line'].create(vals_line)
 
@@ -1133,6 +1155,7 @@ class AccountMoveLine(models.Model):
             'name': self.name,
             'date': self.date,
             'account_id': self.analytic_account_id.id,
+            'tag_ids': [(6, 0, self.analytic_tag_ids.ids)],
             'unit_amount': self.quantity,
             'product_id': self.product_id and self.product_id.id or False,
             'product_uom_id': self.product_uom_id and self.product_uom_id.id or False,
@@ -1146,7 +1169,7 @@ class AccountMoveLine(models.Model):
     @api.model
     def _query_get(self, domain=None):
         context = dict(self._context or {})
-        domain = domain and safe_eval(domain) or []
+        domain = domain and safe_eval(str(domain)) or []
 
         date_field = 'date'
         if context.get('aged_balance'):
@@ -1177,6 +1200,15 @@ class AccountMoveLine(models.Model):
         if context.get('reconcile_date'):
             domain += ['|', ('reconciled', '=', False), '|', ('matched_debit_ids.create_date', '>', context['reconcile_date']), ('matched_credit_ids.create_date', '>', context['reconcile_date'])]
 
+        if context.get('account_tag_ids'):
+            domain += [('account_id.tag_ids', 'in', context['account_tag_ids'].ids)]
+
+        if context.get('analytic_tag_ids'):
+            domain += ['|', ('analytic_account_id.tag_ids', 'in', context['analytic_tag_ids'].ids), ('analytic_tag_ids', 'in', context['analytic_tag_ids'].ids)]
+
+        if context.get('analytic_account_ids'):
+            domain += [('analytic_account_id', 'in', context['analytic_account_ids'].ids)]
+
         where_clause = ""
         where_clause_params = []
         tables = ''
@@ -1202,8 +1234,8 @@ class AccountPartialReconcile(models.Model):
     _name = "account.partial.reconcile"
     _description = "Partial Reconcile"
 
-    debit_move_id = fields.Many2one('account.move.line', index=True)
-    credit_move_id = fields.Many2one('account.move.line', index=True)
+    debit_move_id = fields.Many2one('account.move.line', index=True, required=True)
+    credit_move_id = fields.Many2one('account.move.line', index=True, required=True)
     amount = fields.Monetary(currency_field='company_currency_id', help="Amount concerned by this matching. Assumed to be always positive")
     amount_currency = fields.Monetary(string="Amount in Currency")
     currency_id = fields.Many2one('res.currency', string='Currency')
@@ -1232,6 +1264,8 @@ class AccountPartialReconcile(models.Model):
             if move_date > rec.company_id.fiscalyear_lock_date:
                 move_vals['date'] = move_date
             move = rec.env['account.move'].create(move_vals)
+            amount_diff = rec.company_id.currency_id.round(amount_diff)
+            diff_in_currency = currency.round(diff_in_currency)
             line_to_reconcile = rec.env['account.move.line'].with_context(check_move_validity=False).create({
                 'name': _('Currency exchange rate difference'),
                 'debit': amount_diff < 0 and -amount_diff or 0.0,
@@ -1272,12 +1306,15 @@ class AccountPartialReconcile(models.Model):
         total_debit = 0
         total_credit = 0
         total_amount_currency = 0
-        currency = None
+        #make sure that all partial reconciliations share the same secondary currency otherwise it's not
+        #possible to compute the exchange difference entry and it has to be done manually.
+        currency = list(partial_rec_set)[0].currency_id
         maxdate = None
         aml_to_balance = None
         for partial_rec in partial_rec_set:
-            if currency is None:
-                currency = partial_rec.currency_id
+            if partial_rec.currency_id != currency:
+                #no exchange rate entry will be created
+                currency = None
             for aml in [partial_rec.debit_move_id, partial_rec.credit_move_id]:
                 if aml not in aml_set:
                     if aml.amount_residual or aml.amount_residual_currency:
@@ -1288,13 +1325,18 @@ class AccountPartialReconcile(models.Model):
                     aml_set |= aml
                     if aml.currency_id and aml.currency_id == currency:
                         total_amount_currency += aml.amount_currency
+                    elif partial_rec.currency_id and partial_rec.currency_id == currency:
+                        #if the aml has no secondary currency but is reconciled with other journal item(s) in secondary currency, the amount
+                        #currency is recorded on the partial rec and in order to check if the reconciliation is total, we need to convert the
+                        #aml.balance in that foreign currency
+                        total_amount_currency += aml.company_id.currency_id.with_context(date=aml.date).compute(aml.balance, partial_rec.currency_id)
                 for x in aml.matched_debit_ids | aml.matched_credit_ids:
                     partial_rec_set[x] = None
         partial_rec_ids = [x.id for x in partial_rec_set.keys()]
         aml_ids = aml_set.ids
         #then, if the total debit and credit are equal, or the total amount in currency is 0, the reconciliation is full
         digits_rounding_precision = aml_set[0].company_id.currency_id.rounding
-        if float_is_zero(total_amount_currency, precision_rounding=digits_rounding_precision) or float_compare(total_debit, total_credit, precision_rounding=currency.rounding) == 0:
+        if (currency and float_is_zero(total_amount_currency, precision_rounding=currency.rounding)) or float_compare(total_debit, total_credit, precision_rounding=digits_rounding_precision) == 0:
             exchange_move_id = False
             exchange_partial_rec_id = False
             if currency and aml_to_balance:

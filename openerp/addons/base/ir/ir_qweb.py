@@ -251,7 +251,7 @@ class QWeb(models.AbstractModel):
 
         debugger = element.get('t-debug')
         if debugger is not None:
-            if tools.config['dev_mode']:
+            if 'qweb' in tools.config['dev_mode']:
                 __import__(debugger).set_trace()  # pdb, ipdb, pudb, ...
             else:
                 _logger.warning("@t-debug in template '%s' is only available in --dev mode" % qwebcontext['__template__'])
@@ -748,6 +748,11 @@ class DateTimeConverter(models.AbstractModel):
 
         return babel.dates.format_datetime(value, format=pattern, locale=locale)
 
+    @api.model
+    def record_to_html(self, field_name, record, options=None):
+        field = field = record._fields[field_name]
+        value = record[field_name]
+        return self.with_context(**record.env.context).value_to_html(value, field, options=options)
 
 class TextConverter(models.AbstractModel):
     _name = 'ir.qweb.field.text'
@@ -869,7 +874,7 @@ class MonetaryConverter(models.AbstractModel):
 
         lang = self.user_lang()
         formatted_amount = lang.format(fmt, display_currency.round(from_amount),
-                                       grouping=True, monetary=True)
+                                       grouping=True, monetary=True).replace(r' ', u'\N{NO-BREAK SPACE}')
 
         pre = post = u''
         if display_currency.position == 'before':
@@ -1034,7 +1039,7 @@ class QwebWidgetMonetary(models.AbstractModel):
         fmt = "%.{0}f".format(-precision if precision < 0 else 0)
         lang_code = qwebcontext.context.get('lang') or 'en_US'
         lang = qwebcontext.env['res.lang']._lang_get(lang_code)
-        formatted_amount = lang.format(fmt, inner, grouping=True, monetary=True)
+        formatted_amount = lang.format(fmt, inner, grouping=True, monetary=True).replace(r' ', u'\N{NO-BREAK SPACE}')
         pre = post = u''
         if display.position == 'before':
             pre = u'{symbol}\N{NO-BREAK SPACE}'

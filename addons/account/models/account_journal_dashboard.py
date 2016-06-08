@@ -189,6 +189,7 @@ class account_journal(models.Model):
             'number_to_reconcile': number_to_reconcile,
             'account_balance': formatLang(self.env, account_sum, currency_obj=self.currency_id or self.company_id.currency_id),
             'last_balance': formatLang(self.env, last_balance, currency_obj=self.currency_id or self.company_id.currency_id),
+            'difference': (last_balance-account_sum) and formatLang(self.env, last_balance-account_sum, currency_obj=self.currency_id or self.company_id.currency_id) or False,
             'number_draft': number_draft,
             'number_waiting': number_waiting,
             'number_late': number_late,
@@ -281,13 +282,15 @@ class account_journal(models.Model):
                 action_name = 'action_move_journal_line'
 
         _journal_invoice_type_map = {
-            'sale': 'out_invoice',
-            'purchase': 'in_invoice',
-            'bank': 'bank',
-            'cash': 'cash',
-            'general': 'general',
+            ('sale', None): 'out_invoice',
+            ('purchase', None): 'in_invoice',
+            ('sale', 'refund'): 'out_refund',
+            ('purchase', 'refund'): 'in_refund',
+            ('bank', None): 'bank',
+            ('cash', None): 'cash',
+            ('general', None): 'general',
         }
-        invoice_type = _journal_invoice_type_map[self.type]
+        invoice_type = _journal_invoice_type_map[(self.type, self._context.get('invoice_type'))]
 
         ctx = self._context.copy()
         ctx.update({

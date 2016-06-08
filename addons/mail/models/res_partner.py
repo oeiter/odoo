@@ -73,7 +73,7 @@ class Partner(models.Model):
                              tracking_value.get_old_display_value()[0],
                              tracking_value.get_new_display_value()[0]))
 
-        is_discussion = message.subtype_id.id == self.env['ir.model.data'].xmlid_to_res_id('mail.mt_comment'),
+        is_discussion = message.subtype_id.id == self.env['ir.model.data'].xmlid_to_res_id('mail.mt_comment')
 
         return {
             'signature': signature,
@@ -225,6 +225,18 @@ class Partner(models.Model):
                 WHERE R.res_partner_id = %s """, (self.env.user.partner_id.id,))
             return self.env.cr.dictfetchall()[0].get('needaction_count')
         _logger.error('Call to needaction_count without partner_id')
+        return 0
+
+    @api.model
+    def get_starred_count(self):
+        """ compute the number of starred of the current user """
+        if self.env.user.partner_id:
+            self.env.cr.execute("""
+                SELECT count(*) as starred_count
+                FROM mail_message_res_partner_starred_rel R
+                WHERE R.res_partner_id = %s """, (self.env.user.partner_id.id,))
+            return self.env.cr.dictfetchall()[0].get('starred_count')
+        _logger.error('Call to starred_count without partner_id')
         return 0
 
     @api.model
